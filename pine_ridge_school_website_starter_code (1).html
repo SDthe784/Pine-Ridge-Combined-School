@@ -1,0 +1,205 @@
+# Pine Ridge School Portal (Modern Social App + Media Gallery Upload)
+
+from flask import Flask, render_template_string, request, redirect, session
+import sqlite3, os, time
+from collections import defaultdict
+
+app = Flask(__name__)
+app.secret_key = "secret123"
+
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# =====================
+# DATABASE
+# =====================
+conn = sqlite3.connect('school.db', check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    email TEXT PRIMARY KEY,
+    password TEXT,
+    phone TEXT,
+    role TEXT,
+    bank TEXT,
+    account TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content TEXT,
+    author TEXT,
+    media TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+)
+""")
+
+cursor.execute("SELECT * FROM settings WHERE key='admin_password'")
+if not cursor.fetchone():
+    cursor.execute("INSERT INTO settings VALUES ('admin_password','admin123')")
+    conn.commit()
+
+# =====================
+# SECURITY (simple)
+# =====================
+login_attempts = defaultdict(list)
+blocked_ips = {}
+
+active_devices = {}
+valid_teacher_ids = ["TR001","TR002"]
+PRINCIPAL_EMAIL = "principal@pineridge.com"
+
+# =====================
+# UI STYLE
+# =====================
+style = """
+<style>
+body{margin:0;font-family:Segoe UI;background:#f5f6fa;}
+.header{background:#1e3a8a;color:white;padding:15px;text-align:center;font-size:20px;font-weight:bold;}
+.feed{max-width:650px;margin:auto;padding:10px;}
+.post{background:white;padding:15px;margin:10px 0;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.08);}
+img,video{max-width:100%;border-radius:10px;margin-top:10px;}
+button{padding:8px;border:none;border-radius:8px;background:#2563eb;color:white;margin-top:5px;}
+.bottomnav{position:fixed;bottom:0;width:100%;display:flex;background:#0f172a;color:white;}
+.bottomnav a{flex:1;text-align:center;padding:12px;color:white;text-decoration:none;}
+.modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);}
+.modal-content{background:white;width:300px;margin:15% auto;padding:20px;border-radius:12px;}
+input{width:100%;padding:8px;margin:5px 0;}
+</style>
+"""
+
+# =====================
+# HOME FEED
+# =====================
+home_html = style + """
+<div class='header'>Pine Ridge School - For You</div>
+
+<div class='feed'>
+<h3>School Posts</h3>
+
+{% for p in posts %}
+<div class='post'>
+<p><b>{{p[2]}}</b></p>
+<p>{{p[1]}}</p>
+
+{% if p[3] %}
+    {% if '.mp4' in p[3] %}
+        <video controls src='/uploads/{{p[3]}}'></video>
+    {% else %}
+        <img src='/uploads/{{p[3]}}'>
+    {% endif %}
+{% endif %}
+
+<button onclick='openLogin()'>Like</button>
+<button onclick='openLogin()'>Comment</button>
+<button onclick='openLogin()'>Follow</button>
+</div>
+{% endfor %}
+
+</div>
+
+<!-- LOGIN POPUP -->
+<div class='modal' id='loginModal'>
+<div class='modal-content'>
+<h3>Sign in required</h3>
+<form method='POST' action='/login'>
+<input name='email' placeholder='Email'>
+<input name='password' type='password' placeholder='Password'>
+<button>Login</button>
+</form>
+<button onclick='closeLogin()'>Close</button>
+</div>
+</div>
+
+<!-- BOTTOM NAV -->
+<div class='bottomnav'>
+<a href='/'>For You</a>
+<a href='/new'>New</a>
+<a href='/real'>Real</a>
+</div>
+
+<script>
+function openLogin(){document.getElementById('loginModal').style.display='block';}
+function closeLogin(){document.getElementById('loginModal').style.display='none';}
+</script>
+"""
+
+# =====================
+# ROUTES
+# =====================
+
+@app.route('/')
+def home():
+    cursor.execute("SELECT * FROM posts ORDER BY id DESC")
+    posts = cursor.fetchall()
+    return render_template_string(home_html, posts=posts)
+
+@app.route('/uploads/<filename>')
+def uploads(filename):
+    return open(os.path.join(UPLOAD_FOLDER, filename), 'rb').read()
+
+@app.route('/login', methods=['POST'])
+def login():
+    email = request.form['email']
+    password = request.form['password']
+
+    cursor.execute("SELECT * FROM users WHERE email=? AND password=?", (email,password))
+    user = cursor.fetchone()
+
+    if not user:
+        return redirect('/')
+
+    role = user[3]
+
+    if email == PRINCIPAL_EMAIL:
+        role = "principal"
+
+    session['user']=email
+    session['role']=role
+
+    return redirect('/')
+
+@app.route('/post', methods=['POST'])
+def post():
+    if session.get('role') not in ['teacher','principal']:
+        return redirect('/')
+
+    content = request.form.get('content')
+    file = request.files.get('media')
+
+    filename = None
+
+    if file and file.filename:
+        filename = str(int(time.time())) + "_" + file.filename
+        file.save(os.path.join(UPLOAD_FOLDER, filename))
+
+    cursor.execute("INSERT INTO posts (content,author,media) VALUES (?,?,?)",
+                   (content, session['user'], filename))
+    conn.commit()
+
+    return redirect('/')
+
+@app.route('/new')
+def new_feed():
+    return "<h1>New Updates</h1>"
+
+@app.route('/real')
+def real_feed():
+    return "<h1>Verified School Content</h1>"
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/')
+
+if __name__ == '__main__':
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
